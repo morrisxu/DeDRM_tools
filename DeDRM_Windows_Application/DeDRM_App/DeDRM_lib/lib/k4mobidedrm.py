@@ -60,6 +60,7 @@ __version__ = '5.5'
 #  5.3 - Changed Android support to allow passing of backup .ab files
 #  5.4 - Recognise KFX files masquerading as azw, even if we can't decrypt them yet.
 #  5.5 - Added GPL v3 licence explicitly.
+#  5.x - Invoke KFXZipBook to handle zipped KFX files
 
 import sys, os, re
 import csv
@@ -83,11 +84,13 @@ if inCalibre:
     from calibre_plugins.dedrm import topazextract
     from calibre_plugins.dedrm import kgenpids
     from calibre_plugins.dedrm import androidkindlekey
+    from calibre_plugins.dedrm import kfxdedrm
 else:
     import mobidedrm
     import topazextract
     import kgenpids
     import androidkindlekey
+    import kfxdedrm
 
 # Wrap a stream so that output gets flushed immediately
 # and also make sure that any unicode strings get
@@ -197,13 +200,15 @@ def GetDecryptedBook(infile, kDatabases, androidFiles, serials, pids, starttime 
     mobi = True
     magic8 = open(infile,'rb').read(8)
     if magic8 == '\xeaDRMION\xee':
-        raise DrmException(u"KFX format detected. This format cannot be decrypted yet.")
-        
+        raise DrmException(u"The .kfx DRMION file cannot be decrypted by itself. A .kfx-zip archive containing a DRM voucher is required.")
+
     magic3 = magic8[:3]
     if magic3 == 'TPZ':
         mobi = False
 
-    if mobi:
+    if magic8[:4] == 'PK\x03\x04':
+        mb = kfxdedrm.KFXZipBook(infile)
+    elif mobi:
         mb = mobidedrm.MobiBook(infile)
     else:
         mb = topazextract.TopazBook(infile)
@@ -257,12 +262,16 @@ def decryptBook(infile, outdir, kDatabaseFiles, androidFiles, serials, pids):
         traceback.print_exc()
         return 1
 
-    # if we're saving to the same folder as the original, use file name_
-    # if to a different folder, use book name
-    if os.path.normcase(os.path.normpath(outdir)) == os.path.normcase(os.path.normpath(os.path.dirname(infile))):
-        outfilename = os.path.splitext(os.path.basename(infile))[0]
-    else:
-        outfilename = cleanup_name(book.getBookTitle())
+    # Try to infer a reasonable name
+    orig_fn_root = os.path.splitext(os.path.basename(infile))[0]
+    if (
+        re.match('^B[A-Z0-9]{9}(_EBOK|_EBSP|_sample)?$', orig_fn_root) or
+        re.match('^{0-9A-F-}{36}$', orig_fn_root)
+    ):  # Kindle for PC / Mac / Android / Fire / iOS
+        clean_title = cleanup_name(book.getBookTitle())
+        outfilename = '{}_{}'.format(orig_fn_root, clean_title)
+    else:  # E Ink Kindle, which already uses a reasonable name
+        outfilename = orig_fn_root
 
     # avoid excessively long file names
     if len(outfilename)>150:
